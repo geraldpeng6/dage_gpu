@@ -61,11 +61,24 @@ class LoRAConf:
     r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
-    target_modules: list = field(
-        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"]
-    )
+    target_modules: list = field(default_factory=list)  # 自动检测
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
+
+
+def get_target_modules(model_name: str) -> list:
+    """根据模型名称返回适合的 LoRA 目标模块."""
+    model_name_lower = model_name.lower()
+    
+    # GPT-2 系列
+    if "gpt2" in model_name_lower:
+        return ["c_attn", "c_proj"]
+    # GPT-Neo / GPT-J 系列
+    elif "gpt-neo" in model_name_lower or "gpt-j" in model_name_lower:
+        return ["q_proj", "v_proj", "k_proj", "out_proj"]
+    # LLaMA / Mistral / Qwen 等
+    else:
+        return ["q_proj", "v_proj", "k_proj", "o_proj"]
 
 
 @dataclass
@@ -136,6 +149,10 @@ def parse_args():
     parser.add_argument("--deepspeed", type=str, default="configs/ds_config_zero2.json")
     parser.add_argument("--seed", type=int, default=42)
 
+    # 训练技术参数
+    parser.add_argument("--gradient_checkpointing", action="store_true", default=True)
+    parser.add_argument("--no_gradient_checkpointing", dest="gradient_checkpointing", action="store_false")
+    
     # Zeus 参数
     parser.add_argument("--use_zeus", action="store_true", default=True)
     parser.add_argument("--no_zeus", dest="use_zeus", action="store_false")
@@ -172,6 +189,7 @@ def parse_args():
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps,
+        gradient_checkpointing=args.gradient_checkpointing,
         deepspeed=args.deepspeed,
         use_zeus=args.use_zeus,
         seed=args.seed,
@@ -259,12 +277,15 @@ def load_model_and_tokenizer(model_config: ModelConfig, lora_conf: LoRAConf):
         torch_dtype=torch.bfloat16,
     )
 
-    # LoRA
+    # LoRA - 自动检测目标模块
+    target_modules = lora_conf.target_modules or get_target_modules(model_config.model_name)
+    logger.info(f"LoRA 目标模块: {target_modules}")
+    
     peft_config = LoraConfig(
         r=lora_conf.r,
         lora_alpha=lora_conf.lora_alpha,
         lora_dropout=lora_conf.lora_dropout,
-        target_modules=lora_conf.target_modules,
+        target_modules=target_modules,
         bias=lora_conf.bias,
         task_type=TaskType.CAUSAL_LM,
     )
